@@ -4010,6 +4010,17 @@ pub fn loadDefaultFiles(self: *Config, alloc: Allocator) !void {
             legacy_xdg_action != .not_found;
     };
 
+    // On Windows load %APPDATA%\ghostty\config.ghostty in addition to
+    // the XDG path (%LOCALAPPDATA%\...) loaded above.
+    if (comptime builtin.os.tag == .windows) {
+        if (file_load.defaultWindowsAppDataPath(alloc)) |appdata_path| {
+            defer alloc.free(appdata_path);
+            _ = self.loadOptionalFile(alloc, appdata_path);
+        } else |err| {
+            log.warn("could not determine Windows AppData config path err={}", .{err});
+        }
+    }
+
     // On macOS load the app support directory as well
     if (comptime builtin.os.tag == .macos) {
         const legacy_app_support_path = try file_load.legacyDefaultAppSupportPath(alloc);

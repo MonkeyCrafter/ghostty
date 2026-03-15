@@ -16,6 +16,11 @@ pub const Shell = enum {
     fish,
     nushell,
     powershell,
+    /// Windows Subsystem for Linux. The actual shell integration is handled
+    /// by the Linux-side shell (bash/zsh/fish) running inside WSL. We expose
+    /// GHOSTTY_SHELL_FEATURES into WSL via WSLENV so the Linux scripts pick
+    /// it up automatically.
+    wsl,
     zsh,
 };
 
@@ -82,6 +87,12 @@ pub fn setup(
             alloc_arena,
             command,
             resource_dir,
+            env,
+        ),
+
+        .wsl => try setupWsl(
+            alloc_arena,
+            command,
             env,
         ),
     } orelse return null;
@@ -174,6 +185,8 @@ fn detectShell(alloc: Allocator, command: config.Command) !?Shell {
     if (std.mem.eql(u8, "pwsh.exe", exe)) return .powershell;
     if (std.mem.eql(u8, "powershell", exe)) return .powershell;
     if (std.mem.eql(u8, "powershell.exe", exe)) return .powershell;
+    if (std.mem.eql(u8, "wsl", exe)) return .wsl;
+    if (std.mem.eql(u8, "wsl.exe", exe)) return .wsl;
     if (std.mem.eql(u8, "zsh", exe)) return .zsh;
 
     return null;
@@ -1000,6 +1013,36 @@ test "zsh: missing resources" {
 ///
 /// This applies to both PowerShell 7+ (pwsh) and Windows PowerShell 5.1
 /// (powershell).
+/// Set up shell integration for WSL (Windows Subsystem for Linux).
+///
+/// WSL inherits Windows environment variables selectively: the WSLENV variable
+/// controls which Windows env vars are forwarded into the Linux environment.
+/// We append our Ghostty env vars to WSLENV so the Linux-side shell integration
+/// scripts (bash, zsh, fish, etc.) automatically receive them.
+///
+/// The command itself is returned unchanged — we don't need to wrap wsl.exe.
+fn setupWsl(
+    alloc: Allocator,
+    command: config.Command,
+    env: *EnvMap,
+) !?config.Command {
+    // Build the list of Ghostty env vars to forward.
+    // /u flag means: Windows→Linux (forward as Unix path on the Linux side).
+    const ghostty_wslenv = "GHOSTTY_SHELL_FEATURES/u:GHOSTTY_RESOURCES_DIR/up";
+
+    // Append to any existing WSLENV value so we don't clobber user settings.
+    if (env.get("WSLENV")) |existing| {
+        const merged = try std.fmt.allocPrint(alloc, "{s}:{s}", .{
+            existing, ghostty_wslenv,
+        });
+        try env.put("WSLENV", merged);
+    } else {
+        try env.put("WSLENV", ghostty_wslenv);
+    }
+
+    return try command.clone(alloc);
+}
+
 fn setupPowerShell(
     alloc: Allocator,
     command: config.Command,
@@ -1123,6 +1166,52 @@ test "powershell: missing resources" {
 
     try testing.expect(try setupPowerShell(alloc, .{ .shell = "pwsh" }, resources_dir, &env) == null);
     try testing.expectEqual(0, env.count());
+}
+
+test "wsl: detection" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    try testing.expectEqual(.wsl, try detectShell(alloc, .{ .shell = "wsl" }));
+    try testing.expectEqual(.wsl, try detectShell(alloc, .{ .shell = "wsl.exe" }));
+    try testing.expectEqual(.wsl, try detectShell(alloc, .{ .shell = "/mnt/c/Windows/System32/wsl.exe" }));
+}
+
+test "wsl: sets WSLENV" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var env = EnvMap.init(alloc);
+    defer env.deinit();
+
+    var res: TmpResourcesDir = try .init(alloc, .wsl);
+    defer res.deinit();
+
+    const result = try setup(alloc, res.path, .{ .shell = "wsl.exe" }, &env, null);
+    try testing.expectEqual(.wsl, result.?.shell);
+    const wslenv = env.get("WSLENV") orelse return error.MissingWslenv;
+    try testing.expect(std.mem.indexOf(u8, wslenv, "GHOSTTY_SHELL_FEATURES") != null);
+}
+
+test "wsl: preserves existing WSLENV" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var env = EnvMap.init(alloc);
+    defer env.deinit();
+    try env.put("WSLENV", "MY_VAR/u");
+
+    var res: TmpResourcesDir = try .init(alloc, .wsl);
+    defer res.deinit();
+
+    _ = try setup(alloc, res.path, .{ .shell = "wsl.exe" }, &env, null);
+    const wslenv = env.get("WSLENV") orelse return error.MissingWslenv;
+    try testing.expect(std.mem.indexOf(u8, wslenv, "MY_VAR") != null);
+    try testing.expect(std.mem.indexOf(u8, wslenv, "GHOSTTY_SHELL_FEATURES") != null);
 }
 
 /// Test helper that creates a temporary resources directory with shell integration paths.

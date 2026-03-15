@@ -86,6 +86,17 @@ pub fn preferredAppSupportPath(alloc: Allocator) ![]const u8 {
     return app_support_path;
 }
 
+/// Default path for the Windows %APPDATA% (Roaming) configuration file.
+/// This is `%APPDATA%\ghostty\config.ghostty`, e.g.
+/// `C:\Users\<user>\AppData\Roaming\ghostty\config.ghostty`.
+/// Returned value must be freed by the caller.
+pub fn defaultWindowsAppDataPath(alloc: Allocator) ![]const u8 {
+    const appdata = std.process.getEnvVarOwned(alloc, "APPDATA") catch
+        return error.AppDataNotSet;
+    defer alloc.free(appdata);
+    return std.fs.path.join(alloc, &.{ appdata, "ghostty", "config.ghostty" });
+}
+
 /// Returns the path to the preferred default configuration file.
 /// This is the file where users should place their configuration.
 ///
@@ -113,6 +124,28 @@ pub fn preferredDefaultFilePath(alloc: Allocator) ![]const u8 {
             };
             app_support_file.close();
             return app_support_path;
+        },
+
+        .windows => {
+            // On Windows prefer %APPDATA%\ghostty\config.ghostty (Roaming).
+            // If that file exists, use it. Otherwise fall back to the XDG
+            // path (%LOCALAPPDATA%\ghostty\...) for users who set XDG_CONFIG_HOME.
+            const appdata_path = try defaultWindowsAppDataPath(alloc);
+            if (open(appdata_path)) |f| {
+                f.close();
+                return appdata_path;
+            } else |_| {}
+            errdefer alloc.free(appdata_path);
+            const xdg_path = try preferredXdgPath(alloc);
+            if (open(xdg_path)) |f| {
+                f.close();
+                alloc.free(appdata_path);
+                return xdg_path;
+            } else |_| {}
+            // Neither exists — return the conventional Roaming path so new
+            // users get their template written there.
+            alloc.free(xdg_path);
+            return appdata_path;
         },
 
         // All other platforms use XDG only
