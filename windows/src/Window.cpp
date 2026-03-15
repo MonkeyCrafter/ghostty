@@ -181,8 +181,8 @@ void Window::OnKeyDown(WPARAM vkey, LPARAM lParam)
 {
     if (!m_surface) return;
     auto [key, mods] = Input::TranslateKey(vkey, lParam);
-    if (key != GHOSTTY_KEY_INVALID) {
-        m_surface->KeyEvent(key, GHOSTTY_INPUT_ACTION_PRESS, mods, 0);
+    if (key != GHOSTTY_KEY_UNIDENTIFIED) {
+        m_surface->KeyEvent(key, GHOSTTY_ACTION_PRESS, mods, 0);
     }
 }
 
@@ -190,8 +190,8 @@ void Window::OnKeyUp(WPARAM vkey, LPARAM lParam)
 {
     if (!m_surface) return;
     auto [key, mods] = Input::TranslateKey(vkey, lParam);
-    if (key != GHOSTTY_KEY_INVALID) {
-        m_surface->KeyEvent(key, GHOSTTY_INPUT_ACTION_RELEASE, mods, 0);
+    if (key != GHOSTTY_KEY_UNIDENTIFIED) {
+        m_surface->KeyEvent(key, GHOSTTY_ACTION_RELEASE, mods, 0);
     }
 }
 
@@ -218,18 +218,18 @@ void Window::OnMouseButton(UINT msg, int x, int y, DWORD keyState)
     if (!m_surface) return;
     (void)x; (void)y;
 
-    ghostty_input_mouse_button_e button = GHOSTTY_MOUSE_BUTTON_LEFT;
-    ghostty_input_action_e action = GHOSTTY_INPUT_ACTION_PRESS;
+    ghostty_input_mouse_button_e button = GHOSTTY_MOUSE_LEFT;
+    ghostty_input_mouse_state_e  state  = GHOSTTY_MOUSE_PRESS;
 
     switch (msg) {
-    case WM_LBUTTONDOWN: button = GHOSTTY_MOUSE_BUTTON_LEFT;   action = GHOSTTY_INPUT_ACTION_PRESS;   break;
-    case WM_LBUTTONUP:   button = GHOSTTY_MOUSE_BUTTON_LEFT;   action = GHOSTTY_INPUT_ACTION_RELEASE; break;
-    case WM_RBUTTONDOWN: button = GHOSTTY_MOUSE_BUTTON_RIGHT;  action = GHOSTTY_INPUT_ACTION_PRESS;   break;
-    case WM_RBUTTONUP:   button = GHOSTTY_MOUSE_BUTTON_RIGHT;  action = GHOSTTY_INPUT_ACTION_RELEASE; break;
-    case WM_MBUTTONDOWN: button = GHOSTTY_MOUSE_BUTTON_MIDDLE; action = GHOSTTY_INPUT_ACTION_PRESS;   break;
-    case WM_MBUTTONUP:   button = GHOSTTY_MOUSE_BUTTON_MIDDLE; action = GHOSTTY_INPUT_ACTION_RELEASE; break;
+    case WM_LBUTTONDOWN: button = GHOSTTY_MOUSE_LEFT;   state = GHOSTTY_MOUSE_PRESS;   break;
+    case WM_LBUTTONUP:   button = GHOSTTY_MOUSE_LEFT;   state = GHOSTTY_MOUSE_RELEASE; break;
+    case WM_RBUTTONDOWN: button = GHOSTTY_MOUSE_RIGHT;  state = GHOSTTY_MOUSE_PRESS;   break;
+    case WM_RBUTTONUP:   button = GHOSTTY_MOUSE_RIGHT;  state = GHOSTTY_MOUSE_RELEASE; break;
+    case WM_MBUTTONDOWN: button = GHOSTTY_MOUSE_MIDDLE; state = GHOSTTY_MOUSE_PRESS;   break;
+    case WM_MBUTTONUP:   button = GHOSTTY_MOUSE_MIDDLE; state = GHOSTTY_MOUSE_RELEASE; break;
     }
-    m_surface->MouseButton(button, action, Input::TranslateMods(keyState));
+    m_surface->MouseButton(button, state, Input::TranslateMods(keyState));
 }
 
 void Window::OnMouseWheel(int delta, int x, int y, DWORD keyState)
@@ -237,7 +237,9 @@ void Window::OnMouseWheel(int delta, int x, int y, DWORD keyState)
     if (!m_surface) return;
     (void)x; (void)y;
     double dy = static_cast<double>(delta) / WHEEL_DELTA;
-    m_surface->MouseScroll(0.0, dy, Input::TranslateMods(keyState));
+    // ghostty_input_scroll_mods_t is a packed int; for now pass mods as-is.
+    m_surface->MouseScroll(0.0, dy,
+        static_cast<ghostty_input_scroll_mods_t>(Input::TranslateMods(keyState)));
 }
 
 LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg,

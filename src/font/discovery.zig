@@ -1293,8 +1293,11 @@ pub const DirectWrite = struct {
             } else true; // no family filter — include all
             if (!matches) continue;
 
-            // The registry value data is a UTF-16LE filename string.
-            const filename_utf16 = std.mem.bytesAsSlice(u16, data_buf[0..data_len]);
+            // The registry value data is a UTF-16LE filename string (bytes).
+            // bytesAsSlice requires an even byte count; mask off any trailing
+            // odd byte that Windows might report for a truncated read.
+            const data_len_even = data_len & ~@as(u32, 1);
+            const filename_utf16 = std.mem.bytesAsSlice(u16, data_buf[0..data_len_even]);
             // Strip null terminator if present.
             const filename_utf16_trimmed = if (filename_utf16.len > 0 and
                 filename_utf16[filename_utf16.len - 1] == 0)

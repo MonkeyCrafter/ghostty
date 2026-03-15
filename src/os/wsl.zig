@@ -58,8 +58,10 @@ pub fn windowsPathToWsl(alloc: Allocator, path: []const u8) ![]const u8 {
         const rest = path[3..]; // strip "C:\"
 
         // Translate remaining backslashes to forward slashes.
+        // Use defer (not errdefer) so the intermediate buffer is always freed;
+        // allocPrint below copies the data into the final allocation.
         const translated = try alloc.alloc(u8, rest.len);
-        errdefer alloc.free(translated);
+        defer alloc.free(translated);
         for (rest, 0..) |ch, i| {
             translated[i] = if (ch == '\\') '/' else ch;
         }

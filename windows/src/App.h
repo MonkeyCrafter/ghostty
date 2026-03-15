@@ -28,13 +28,8 @@ public:
     void Wakeup();
 
     /// Perform an action dispatched by libghostty (e.g. new_window, close, etc.)
-    void PerformAction(ghostty_target_s target, ghostty_action_s action);
-
-    /// Called by libghostty when a new surface (terminal pane) should be created.
-    ghostty_surface_t CreateSurface(const ghostty_surface_config_s* config);
-
-    /// Called by libghostty when a surface should be destroyed.
-    void DestroySurface(ghostty_surface_t surface);
+    /// Returns true if the action was handled.
+    bool PerformAction(ghostty_target_s target, ghostty_action_s action);
 
     /// Get the underlying ghostty app handle.
     ghostty_app_t GhosttyApp() const { return m_app; }
@@ -42,12 +37,38 @@ public:
     HINSTANCE HInstance() const { return m_hInstance; }
 
     // ── libghostty runtime callbacks (static trampolines) ──────────────────
+    // These functions are registered in ghostty_runtime_config_s.
+    // Clipboard/close callbacks receive the *surface* userdata (Surface*).
+    // Wakeup receives the *app* userdata (App*).
+    // Action receives ghostty_app_t (use ghostty_app_userdata() to get App*).
 
     static void OnWakeup(void* userdata);
-    static void OnAction(ghostty_app_t app,
+
+    /// ghostty_runtime_action_cb: (ghostty_app_t, ghostty_target_s, ghostty_action_s) -> bool
+    static bool OnAction(ghostty_app_t app,
                          ghostty_target_s target,
-                         ghostty_action_s action,
-                         void* userdata);
+                         ghostty_action_s action);
+
+    /// ghostty_runtime_read_clipboard_cb: (surface_ud, clipboard_e, request) -> bool
+    static bool OnReadClipboard(void* userdata,
+                                ghostty_clipboard_e type,
+                                void* request);
+
+    /// ghostty_runtime_confirm_read_clipboard_cb: (surface_ud, text, request, kind)
+    static void OnConfirmReadClipboard(void* userdata,
+                                       const char* text,
+                                       void* request,
+                                       ghostty_clipboard_request_e kind);
+
+    /// ghostty_runtime_write_clipboard_cb: (surface_ud, clipboard_e, content*, count, confirm)
+    static void OnWriteClipboard(void* userdata,
+                                 ghostty_clipboard_e type,
+                                 const ghostty_clipboard_content_s* content,
+                                 size_t count,
+                                 bool confirm);
+
+    /// ghostty_runtime_close_surface_cb: (surface_ud, process_alive)
+    static void OnCloseSurface(void* userdata, bool process_alive);
 
 private:
     HINSTANCE m_hInstance;
