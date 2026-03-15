@@ -15,6 +15,12 @@ pub const Shell = enum {
     elvish,
     fish,
     nushell,
+    powershell,
+    /// Windows Subsystem for Linux. The actual shell integration is handled
+    /// by the Linux-side shell (bash/zsh/fish) running inside WSL. We expose
+    /// GHOSTTY_SHELL_FEATURES into WSL via WSLENV so the Linux scripts pick
+    /// it up automatically.
+    wsl,
     zsh,
 };
 
@@ -76,6 +82,19 @@ pub fn setup(
             if (!try setupXdgDataDirs(alloc_arena, resource_dir, env)) return null;
             break :xdg try command.clone(alloc_arena);
         },
+
+        .powershell => try setupPowerShell(
+            alloc_arena,
+            command,
+            resource_dir,
+            env,
+        ),
+
+        .wsl => try setupWsl(
+            alloc_arena,
+            command,
+            env,
+        ),
     } orelse return null;
 
     return .{
@@ -160,6 +179,14 @@ fn detectShell(alloc: Allocator, command: config.Command) !?Shell {
     if (std.mem.eql(u8, "elvish", exe)) return .elvish;
     if (std.mem.eql(u8, "fish", exe)) return .fish;
     if (std.mem.eql(u8, "nu", exe)) return .nushell;
+    // PowerShell 7+ (pwsh) and Windows PowerShell 5.1 (powershell).
+    // On Windows the .exe extension is included in arg0 basename.
+    if (std.mem.eql(u8, "pwsh", exe)) return .powershell;
+    if (std.mem.eql(u8, "pwsh.exe", exe)) return .powershell;
+    if (std.mem.eql(u8, "powershell", exe)) return .powershell;
+    if (std.mem.eql(u8, "powershell.exe", exe)) return .powershell;
+    if (std.mem.eql(u8, "wsl", exe)) return .wsl;
+    if (std.mem.eql(u8, "wsl.exe", exe)) return .wsl;
     if (std.mem.eql(u8, "zsh", exe)) return .zsh;
 
     return null;
@@ -174,6 +201,10 @@ test detectShell {
     try testing.expectEqual(.elvish, try detectShell(alloc, .{ .shell = "elvish" }));
     try testing.expectEqual(.fish, try detectShell(alloc, .{ .shell = "fish" }));
     try testing.expectEqual(.nushell, try detectShell(alloc, .{ .shell = "nu" }));
+    try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "pwsh" }));
+    try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "pwsh.exe" }));
+    try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "powershell" }));
+    try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "powershell.exe" }));
     try testing.expectEqual(.zsh, try detectShell(alloc, .{ .shell = "zsh" }));
 
     if (comptime builtin.target.os.tag.isDarwin()) {
@@ -975,6 +1006,214 @@ test "zsh: missing resources" {
     try testing.expectEqual(0, env.count());
 }
 
+/// Setup automatic PowerShell shell integration. This works by setting
+/// GHOSTTY_PSINTEGRATION_PATH to the path to our PowerShell integration
+/// script and modifying the command to source it via
+/// `-NoExit -Command ". $env:GHOSTTY_PSINTEGRATION_PATH"`.
+///
+/// This applies to both PowerShell 7+ (pwsh) and Windows PowerShell 5.1
+/// (powershell).
+/// Set up shell integration for WSL (Windows Subsystem for Linux).
+///
+/// WSL inherits Windows environment variables selectively: the WSLENV variable
+/// controls which Windows env vars are forwarded into the Linux environment.
+/// We append our Ghostty env vars to WSLENV so the Linux-side shell integration
+/// scripts (bash, zsh, fish, etc.) automatically receive them.
+///
+/// The command itself is returned unchanged — we don't need to wrap wsl.exe.
+fn setupWsl(
+    alloc: Allocator,
+    command: config.Command,
+    env: *EnvMap,
+) !?config.Command {
+    // Build the list of Ghostty env vars to forward.
+    // /u flag means: Windows→Linux (forward as Unix path on the Linux side).
+    const ghostty_wslenv = "GHOSTTY_SHELL_FEATURES/u:GHOSTTY_RESOURCES_DIR/up";
+
+    // Append to any existing WSLENV value so we don't clobber user settings.
+    if (env.get("WSLENV")) |existing| {
+        const merged = try std.fmt.allocPrint(alloc, "{s}:{s}", .{
+            existing, ghostty_wslenv,
+        });
+        try env.put("WSLENV", merged);
+    } else {
+        try env.put("WSLENV", ghostty_wslenv);
+    }
+
+    return try command.clone(alloc);
+}
+
+fn setupPowerShell(
+    alloc: Allocator,
+    command: config.Command,
+    resource_dir: []const u8,
+    env: *EnvMap,
+) !?config.Command {
+    var stack_fallback = std.heap.stackFallback(4096, alloc);
+    var cmd = internal_os.shell.ShellCommandBuilder.init(stack_fallback.get());
+    defer cmd.deinit();
+
+    // Iterator that yields each argument in the original command line.
+    var iter = try command.argIterator(alloc);
+    defer iter.deinit();
+
+    // Start accumulating arguments with the executable.
+    const exe = iter.next() orelse return null;
+    try cmd.appendArg(exe);
+
+    // Walk through remaining arguments. If we see a -Command or -c argument
+    // already, bail out — the user is running a non-interactive session.
+    // PowerShell flags are case-insensitive so we compare case-insensitively.
+    while (iter.next()) |arg| {
+        if (std.ascii.eqlIgnoreCase(arg, "-command") or
+            std.ascii.eqlIgnoreCase(arg, "-c") or
+            std.ascii.eqlIgnoreCase(arg, "-noninteractive"))
+        {
+            return null;
+        }
+        try cmd.appendArg(arg);
+    }
+
+    // Verify the integration script exists before setting env vars.
+    var script_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const script_path = try std.fmt.bufPrint(
+        &script_path_buf,
+        "{s}/shell-integration/powershell/ghostty.ps1",
+        .{resource_dir},
+    );
+    if (std.fs.openFileAbsolute(script_path, .{})) |file| {
+        file.close();
+    } else |err| {
+        log.warn("unable to open {s}: {}", .{ script_path, err });
+        return null;
+    }
+
+    // Store the script path in an environment variable so PowerShell can find it.
+    try env.put("GHOSTTY_PSINTEGRATION_PATH", script_path);
+
+    // Inject -NoExit -Command ". $env:GHOSTTY_PSINTEGRATION_PATH" to source
+    // our integration script and stay in interactive mode after it runs.
+    try cmd.appendArg("-NoExit");
+    try cmd.appendArg("-Command");
+    try cmd.appendArg(". $env:GHOSTTY_PSINTEGRATION_PATH");
+
+    return .{ .shell = try alloc.dupeZ(u8, try cmd.toOwnedSlice()) };
+}
+
+test "powershell" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var res: TmpResourcesDir = try .init(alloc, .powershell);
+    defer res.deinit();
+
+    var env = EnvMap.init(alloc);
+    defer env.deinit();
+
+    const command = try setupPowerShell(alloc, .{ .shell = "pwsh" }, res.path, &env);
+    try testing.expectEqualStrings(
+        "pwsh -NoExit -Command . $env:GHOSTTY_PSINTEGRATION_PATH",
+        command.?.shell,
+    );
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    try testing.expectEqualStrings(
+        try std.fmt.bufPrint(&path_buf, "{s}/ghostty.ps1", .{res.shell_path}),
+        env.get("GHOSTTY_PSINTEGRATION_PATH").?,
+    );
+}
+
+test "powershell: unsupported options" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var res: TmpResourcesDir = try .init(alloc, .powershell);
+    defer res.deinit();
+
+    const cmdlines = [_][:0]const u8{
+        "pwsh -Command exit",
+        "pwsh -c exit",
+        "pwsh -NonInteractive",
+    };
+
+    for (cmdlines) |cmdline| {
+        var env = EnvMap.init(alloc);
+        defer env.deinit();
+
+        try testing.expect(try setupPowerShell(alloc, .{ .shell = cmdline }, res.path, &env) == null);
+        try testing.expectEqual(0, env.count());
+    }
+}
+
+test "powershell: missing resources" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const resources_dir = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(resources_dir);
+
+    var env = EnvMap.init(alloc);
+    defer env.deinit();
+
+    try testing.expect(try setupPowerShell(alloc, .{ .shell = "pwsh" }, resources_dir, &env) == null);
+    try testing.expectEqual(0, env.count());
+}
+
+test "wsl: detection" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    try testing.expectEqual(.wsl, try detectShell(alloc, .{ .shell = "wsl" }));
+    try testing.expectEqual(.wsl, try detectShell(alloc, .{ .shell = "wsl.exe" }));
+    try testing.expectEqual(.wsl, try detectShell(alloc, .{ .shell = "/mnt/c/Windows/System32/wsl.exe" }));
+}
+
+test "wsl: sets WSLENV" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var env = EnvMap.init(alloc);
+    defer env.deinit();
+
+    var res: TmpResourcesDir = try .init(alloc, .wsl);
+    defer res.deinit();
+
+    const result = try setup(alloc, res.path, .{ .shell = "wsl.exe" }, &env, null);
+    try testing.expectEqual(.wsl, result.?.shell);
+    const wslenv = env.get("WSLENV") orelse return error.MissingWslenv;
+    try testing.expect(std.mem.indexOf(u8, wslenv, "GHOSTTY_SHELL_FEATURES") != null);
+}
+
+test "wsl: preserves existing WSLENV" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var env = EnvMap.init(alloc);
+    defer env.deinit();
+    try env.put("WSLENV", "MY_VAR/u");
+
+    var res: TmpResourcesDir = try .init(alloc, .wsl);
+    defer res.deinit();
+
+    _ = try setup(alloc, res.path, .{ .shell = "wsl.exe" }, &env, null);
+    const wslenv = env.get("WSLENV") orelse return error.MissingWslenv;
+    try testing.expect(std.mem.indexOf(u8, wslenv, "MY_VAR") != null);
+    try testing.expect(std.mem.indexOf(u8, wslenv, "GHOSTTY_SHELL_FEATURES") != null);
+}
+
 /// Test helper that creates a temporary resources directory with shell integration paths.
 const TmpResourcesDir = struct {
     allocator: Allocator,
@@ -1007,6 +1246,10 @@ const TmpResourcesDir = struct {
         switch (shell) {
             .bash => try tmp_dir.dir.writeFile(.{
                 .sub_path = "shell-integration/bash/ghostty.bash",
+                .data = "",
+            }),
+            .powershell => try tmp_dir.dir.writeFile(.{
+                .sub_path = "shell-integration/powershell/ghostty.ps1",
                 .data = "",
             }),
             else => {},

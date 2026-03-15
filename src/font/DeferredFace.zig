@@ -30,6 +30,10 @@ ct: if (font.Discover == font.discovery.CoreText) ?CoreText else void =
 wc: if (options.backend == .web_canvas) ?WebCanvas else void =
     if (options.backend == .web_canvas) null else {},
 
+/// DirectWrite (Windows): font file path for FreeType to load.
+dw: if (options.backend == .directwrite_freetype) ?DirectWriteFace else void =
+    if (options.backend == .directwrite_freetype) null else {},
+
 /// Fontconfig specific data. This is only present if building with fontconfig.
 pub const Fontconfig = struct {
     /// The pattern for this font. This must be the "render prepared" pattern.
@@ -84,6 +88,28 @@ pub const WebCanvas = struct {
     }
 };
 
+/// DirectWrite-specific data for Windows. Holds the font file path that
+/// FreeType will use to open and rasterize the font. This is only present
+/// when building with directwrite_freetype.
+pub const DirectWriteFace = struct {
+    /// Allocator used to allocate the path string.
+    alloc: Allocator,
+
+    /// Null-terminated path to the font file on disk (e.g. "C:\Windows\Fonts\consola.ttf").
+    path: [:0]const u8,
+
+    /// Font face index within the file (0 for most fonts).
+    index: i32,
+
+    /// Variation axes to apply to this font.
+    variations: []const font.face.Variation,
+
+    pub fn deinit(self: *DirectWriteFace) void {
+        self.alloc.free(self.path);
+        self.* = undefined;
+    }
+};
+
 pub fn deinit(self: *DeferredFace) void {
     switch (options.backend) {
         .fontconfig_freetype => if (self.fc) |*fc| fc.deinit(),
@@ -94,6 +120,7 @@ pub fn deinit(self: *DeferredFace) void {
         .coretext_harfbuzz,
         .coretext_noshape,
         => if (self.ct) |*ct| ct.deinit(),
+        .directwrite_freetype => if (self.dw) |*dw| dw.deinit(),
     }
     self.* = undefined;
 }
@@ -120,6 +147,12 @@ pub fn familyName(self: DeferredFace, buf: []u8) ![]const u8 {
         },
 
         .web_canvas => if (self.wc) |wc| return wc.font_str,
+
+        // For DirectWrite, extract the family name from the file path basename.
+        .directwrite_freetype => if (self.dw) |dw| {
+            _ = buf;
+            return std.fs.path.stem(dw.path);
+        },
     }
 
     return "";
@@ -151,6 +184,12 @@ pub fn name(self: DeferredFace, buf: []u8) ![]const u8 {
         },
 
         .web_canvas => if (self.wc) |wc| return wc.font_str,
+
+        // For DirectWrite, use the font file stem as the name.
+        .directwrite_freetype => if (self.dw) |dw| {
+            _ = buf;
+            return std.fs.path.stem(dw.path);
+        },
     }
 
     return "";
@@ -167,6 +206,7 @@ pub fn load(
         .coretext, .coretext_harfbuzz, .coretext_noshape => try self.loadCoreText(lib, opts),
         .coretext_freetype => try self.loadCoreTextFreetype(lib, opts),
         .web_canvas => try self.loadWebCanvas(opts),
+        .directwrite_freetype => try self.loadDirectWrite(lib, opts),
 
         // Unreachable because we must be already loaded or have the
         // proper configuration for one of the other deferred mechanisms.
@@ -256,6 +296,18 @@ fn loadWebCanvas(
     return try .initNamed(wc.alloc, wc.font_str, opts, wc.presentation);
 }
 
+fn loadDirectWrite(
+    self: *DeferredFace,
+    lib: Library,
+    opts: font.face.Options,
+) !Face {
+    const dw = self.dw.?;
+    var face = try Face.initFile(lib, dw.path, dw.index, opts);
+    errdefer face.deinit();
+    try face.setVariations(dw.variations, opts);
+    return face;
+}
+
 /// Returns true if this face can satisfy the given codepoint and
 /// presentation. If presentation is null, then it just checks if the
 /// codepoint is present at all.
@@ -343,6 +395,10 @@ pub fn hasCodepoint(self: DeferredFace, cp: u32, p: ?Presentation) bool {
             defer face.deinit();
             return face.glyphIndex(cp) != null;
         },
+
+        // DirectWrite: we don't pre-load glyph metadata, so we can't do
+        // a fast check. Return true to let FreeType attempt to load the glyph.
+        .directwrite_freetype => if (self.dw) |_| return true,
 
         .freetype => {},
     }

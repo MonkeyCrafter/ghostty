@@ -375,6 +375,13 @@ pub fn add(
     // libcpp is required for various dependencies
     step.linkLibCpp();
 
+    // Windows: link DirectWrite for font discovery and standard Win32 libraries
+    // needed by the directwrite_freetype font backend.
+    if (step.rootModuleTarget().os.tag == .windows) {
+        step.linkSystemLibrary2("dwrite", .{ .preferred_link_mode = .dynamic });
+        step.linkSystemLibrary2("ole32", .{ .preferred_link_mode = .dynamic });
+    }
+
     // We always require the system SDK so that our system headers are available.
     // This makes things like `os/log.h` available for cross-compiling.
     if (step.rootModuleTarget().os.tag.isDarwin()) {

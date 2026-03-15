@@ -1963,7 +1963,16 @@ keybind: Keybinds = .{},
 /// apply. The other padding is applied first and may affect how many grid cells
 /// actually exist, and this is applied last in order to balance the padding
 /// given a certain viewport size and grid cell size.
-@"window-padding-balance": bool = false,
+///
+/// Valid values are:
+///
+/// * `false` - No balancing is applied.
+/// * `true` - Balance the padding, but cap the top padding to avoid
+///   excessive space above the first row. Any excess is shifted to the
+///   bottom.
+/// * `equal` - Balance the padding equally on all sides without any
+///   top-padding cap. (Available since: 1.4.0)
+@"window-padding-balance": WindowPaddingBalance = .false,
 
 /// The color of the padding area of the window. Valid values are:
 ///
@@ -4010,6 +4019,17 @@ pub fn loadDefaultFiles(self: *Config, alloc: Allocator) !void {
             legacy_xdg_action != .not_found;
     };
 
+    // On Windows load %APPDATA%\ghostty\config.ghostty in addition to
+    // the XDG path (%LOCALAPPDATA%\...) loaded above.
+    if (comptime builtin.os.tag == .windows) {
+        if (file_load.defaultWindowsAppDataPath(alloc)) |appdata_path| {
+            defer alloc.free(appdata_path);
+            _ = self.loadOptionalFile(alloc, appdata_path);
+        } else |err| {
+            log.warn("could not determine Windows AppData config path err={}", .{err});
+        }
+    }
+
     // On macOS load the app support directory as well
     if (comptime builtin.os.tag == .macos) {
         const legacy_app_support_path = try file_load.legacyDefaultAppSupportPath(alloc);
@@ -4563,8 +4583,48 @@ pub fn finalize(self: *Config) !void {
             switch (builtin.os.tag) {
                 .windows => {
                     if (self.command == null) {
-                        log.warn("no default shell found, will default to using cmd", .{});
-                        self.command = .{ .shell = "cmd.exe" };
+                        // Prefer PowerShell 7+ (pwsh.exe), then Windows PowerShell 5.1
+                        // (powershell.exe), then fall back to cmd.exe.
+                        if (std.process.getEnvVarOwned(alloc, "SYSTEMROOT")) |sysroot| {
+                            defer alloc.free(sysroot);
+                            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+                            // Check for pwsh.exe in common locations
+                            const pwsh_paths = [_][]const u8{
+                                "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+                                "C:\\Program Files\\PowerShell\\7-preview\\pwsh.exe",
+                            };
+                            var found_pwsh = false;
+                            for (pwsh_paths) |pwsh_path| {
+                                if (std.fs.accessAbsolute(pwsh_path, .{})) {
+                                    const copy = try alloc.dupeZ(u8, pwsh_path);
+                                    self.command = .{ .shell = copy };
+                                    log.info("default shell source=pwsh value={s}", .{pwsh_path});
+                                    found_pwsh = true;
+                                    break;
+                                } else |_| {}
+                            }
+
+                            if (!found_pwsh) {
+                                // Check for powershell.exe (Windows PowerShell 5.1)
+                                const ps_path = try std.fmt.bufPrint(
+                                    &path_buf,
+                                    "{s}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                                    .{sysroot},
+                                );
+                                if (std.fs.accessAbsolute(ps_path, .{})) {
+                                    const copy = try alloc.dupeZ(u8, ps_path);
+                                    self.command = .{ .shell = copy };
+                                    log.info("default shell source=powershell value={s}", .{ps_path});
+                                } else |_| {
+                                    log.warn("no default shell found, will default to using cmd", .{});
+                                    self.command = .{ .shell = "cmd.exe" };
+                                }
+                            }
+                        } else |_| {
+                            log.warn("no default shell found, will default to using cmd", .{});
+                            self.command = .{ .shell = "cmd.exe" };
+                        }
                     }
 
                     if (wd == .home) {
@@ -5227,6 +5287,12 @@ pub const Fullscreen = enum(c_int) {
     @"non-native",
     @"non-native-visible-menu",
     @"non-native-padded-notch",
+};
+
+pub const WindowPaddingBalance = enum {
+    false,
+    true,
+    equal,
 };
 
 pub const WindowPaddingColor = enum {
