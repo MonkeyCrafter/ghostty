@@ -42,6 +42,7 @@ bitigchi
 bkircher
 bo2themax
 brentschroeter
+cadebrown
 cespare
 charliie-dev
 chernetskyi
@@ -54,6 +55,7 @@ daiimus
 damyanbogoev
 danulqua
 dariogriffo
+davidsanchez222
 dervedro
 devsunb
 diaaeddin
@@ -139,6 +141,7 @@ phush0
 piedrahitac
 pluiedev
 pouwerkerk
+poweruser64
 prakhar54-byte
 priyans-hu
 puzza007
