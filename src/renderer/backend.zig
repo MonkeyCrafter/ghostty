@@ -18,6 +18,9 @@ pub const Backend = enum {
         }
 
         if (target.os.tag.isDarwin()) return .metal;
+        // Windows uses the OpenGL renderer via WGL context creation in the
+        // Win32 host application. Direct3D may be added later as an alternative.
+        if (target.os.tag == .windows) return .opengl;
         return .opengl;
     }
 };

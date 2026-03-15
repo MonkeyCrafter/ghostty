@@ -28,6 +28,7 @@ pub const path = @import("path.zig");
 pub const passwd = @import("passwd.zig");
 pub const xdg = @import("xdg.zig");
 pub const windows = @import("windows.zig");
+pub const wsl = @import("wsl.zig");
 pub const macos = @import("macos.zig");
 pub const shell = @import("shell.zig");
 pub const uri = @import("uri.zig");

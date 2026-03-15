@@ -4563,8 +4563,48 @@ pub fn finalize(self: *Config) !void {
             switch (builtin.os.tag) {
                 .windows => {
                     if (self.command == null) {
-                        log.warn("no default shell found, will default to using cmd", .{});
-                        self.command = .{ .shell = "cmd.exe" };
+                        // Prefer PowerShell 7+ (pwsh.exe), then Windows PowerShell 5.1
+                        // (powershell.exe), then fall back to cmd.exe.
+                        if (std.process.getEnvVarOwned(alloc, "SYSTEMROOT")) |sysroot| {
+                            defer alloc.free(sysroot);
+                            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+                            // Check for pwsh.exe in common locations
+                            const pwsh_paths = [_][]const u8{
+                                "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+                                "C:\\Program Files\\PowerShell\\7-preview\\pwsh.exe",
+                            };
+                            var found_pwsh = false;
+                            for (pwsh_paths) |pwsh_path| {
+                                if (std.fs.accessAbsolute(pwsh_path, .{})) {
+                                    const copy = try alloc.dupeZ(u8, pwsh_path);
+                                    self.command = .{ .shell = copy };
+                                    log.info("default shell source=pwsh value={s}", .{pwsh_path});
+                                    found_pwsh = true;
+                                    break;
+                                } else |_| {}
+                            }
+
+                            if (!found_pwsh) {
+                                // Check for powershell.exe (Windows PowerShell 5.1)
+                                const ps_path = try std.fmt.bufPrint(
+                                    &path_buf,
+                                    "{s}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                                    .{sysroot},
+                                );
+                                if (std.fs.accessAbsolute(ps_path, .{})) {
+                                    const copy = try alloc.dupeZ(u8, ps_path);
+                                    self.command = .{ .shell = copy };
+                                    log.info("default shell source=powershell value={s}", .{ps_path});
+                                } else |_| {
+                                    log.warn("no default shell found, will default to using cmd", .{});
+                                    self.command = .{ .shell = "cmd.exe" };
+                                }
+                            }
+                        } else |_| {
+                            log.warn("no default shell found, will default to using cmd", .{});
+                            self.command = .{ .shell = "cmd.exe" };
+                        }
                     }
 
                     if (wd == .home) {

@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ghostty Windows Installer — WiX 4.x source
+  Build with:
+    wix build ghostty.wxs -o ghostty.msi \
+        -d BinDir=<path\to\cmake\build\Release>
+
+  The variable BinDir must point to the directory that contains:
+    Ghostty.exe, ghostty.dll, and resources\
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Package
+    Name="Ghostty"
+    Manufacturer="Mitchell Hashimoto"
+    Version="1.0.0"
+    UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
+    Language="1033"
+    Codepage="1252"
+    InstallerVersion="500"
+    Compressed="yes">
+
+    <!-- Upgrade / uninstall handling -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Ghostty is already installed." />
+
+    <!-- Icons -->
+    <Icon Id="GhosttyIcon" SourceFile="$(var.BinDir)\..\..\dist\windows\ghostty.ico" />
+    <Property Id="ARPPRODUCTICON" Value="GhosttyIcon" />
+    <Property Id="ARPHELPLINK" Value="https://ghostty.org" />
+
+    <!-- Media / cab -->
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="ProductFeature" Title="Ghostty" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentGroupRef Id="ShellIntegrationComponents" />
+      <ComponentRef Id="ShortcutComponent" />
+      <ComponentRef Id="PathComponent" />
+    </Feature>
+
+  </Package>
+
+  <!-- Installation directory: %ProgramFiles%\Ghostty -->
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLDIR" Name="Ghostty" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Ghostty" />
+    </StandardDirectory>
+  </Fragment>
+
+  <!-- Main binaries -->
+  <Fragment>
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLDIR">
+
+      <Component Id="GhosttyExe" Guid="B1C2D3E4-F5A6-7890-BCDE-F01234567890">
+        <File Id="GhosttyExeFile"
+              Source="$(var.BinDir)\Ghostty.exe"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="GhosttyDll" Guid="C2D3E4F5-A6B7-8901-CDEF-012345678901">
+        <File Id="GhosttyDllFile"
+              Source="$(var.BinDir)\ghostty.dll"
+              KeyPath="yes" />
+      </Component>
+
+    </ComponentGroup>
+  </Fragment>
+
+  <!-- Shell integration scripts (powershell, bash, fish, zsh, etc.) -->
+  <Fragment>
+    <ComponentGroup Id="ShellIntegrationComponents" Directory="INSTALLDIR">
+
+      <Component Id="PowerShellScript" Guid="D3E4F5A6-B7C8-9012-DEF0-123456789012">
+        <CreateFolder>
+          <util:PermissionEx xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+            User="Everyone" GenericAll="no" Read="yes" />
+        </CreateFolder>
+        <File Id="GhosttyPs1"
+              Source="$(var.BinDir)\resources\shell-integration\powershell\ghostty.ps1"
+              KeyPath="yes" />
+      </Component>
+
+    </ComponentGroup>
+  </Fragment>
+
+  <!-- Start Menu shortcut -->
+  <Fragment>
+    <Component Id="ShortcutComponent"
+               Directory="ApplicationProgramsFolder"
+               Guid="E4F5A6B7-C8D9-0123-EF01-234567890123">
+      <Shortcut Id="AppShortcut"
+                Name="Ghostty"
+                Description="Fast, feature-rich terminal emulator"
+                Target="[INSTALLDIR]Ghostty.exe"
+                WorkingDirectory="INSTALLDIR"
+                Icon="GhosttyIcon" />
+      <RemoveFolder Id="CleanUpShortcut" Directory="ApplicationProgramsFolder" On="uninstall" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\Ghostty"
+                     Name="installed"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+  </Fragment>
+
+  <!-- Add install directory to system PATH -->
+  <Fragment>
+    <Component Id="PathComponent"
+               Directory="INSTALLDIR"
+               Guid="F5A6B7C8-D9E0-1234-F012-345678901234">
+      <Environment Id="PathEnv"
+                   Name="PATH"
+                   Value="[INSTALLDIR]"
+                   Permanent="no"
+                   Part="last"
+                   Action="set"
+                   System="yes" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\Ghostty"
+                     Name="path_set"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+  </Fragment>
+
+</Wix>
