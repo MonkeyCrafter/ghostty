@@ -36,6 +36,7 @@ const App = @import("App.zig");
 const internal_os = @import("os/main.zig");
 const inspectorpkg = @import("inspector/main.zig");
 const SurfaceMouse = @import("surface_mouse.zig");
+const ProcessInfo = @import("pty.zig").ProcessInfo;
 
 const log = std.log.scoped(.surface);
 
@@ -52,6 +53,13 @@ pub const min_window_height_cells: u32 = 4;
 /// The maximum number of key tables that can be active at any
 /// given time. `activate_key_table` calls after this are ignored.
 const max_active_key_tables = 8;
+
+/// Unique ID used to identify this surface for IPC purposes. It is
+/// exposed to the commands running in surfaces as the environment variable
+/// GHOSTTY_SURFACE_ID. It must not be zero as zero is used to incicate a null
+/// value when communicating an ID over DBus as DBus does not allow null/maybe
+/// values.
+id: u64,
 
 /// Allocator
 alloc: Allocator,
@@ -578,6 +586,13 @@ pub fn init(
     errdefer io_thread.deinit();
 
     self.* = .{
+        .id = id: {
+            while (true) {
+                const candidate = std.crypto.random.int(u64);
+                if (candidate == 0) continue;
+                break :id candidate;
+            }
+        },
         .alloc = alloc,
         .app = app,
         .rt_app = rt_app,
@@ -630,6 +645,12 @@ pub fn init(
 
         // don't leak GHOSTTY_LOG to any subprocesses
         env.remove("GHOSTTY_LOG");
+
+        var buf: [18]u8 = undefined;
+        try env.put(
+            "GHOSTTY_SURFACE_ID",
+            std.fmt.bufPrint(&buf, "0x{x:0>16}", .{self.id}) catch unreachable,
+        );
 
         // Initialize our IO backend
         var io_exec = try termio.Exec.init(alloc, .{
@@ -3261,7 +3282,11 @@ pub fn focusCallback(self: *Surface, focused: bool) !void {
     crash.sentry.thread_state = self.crashThreadState();
     defer crash.sentry.thread_state = null;
 
-    // If our focus state is the same we do nothing.
+    // Always update the app focused surface, otherwise we miss
+    // the first surface created.
+    if (focused) self.app.focusSurface(self);
+
+    // If our focus state is unchanged we do nothing else.
     if (self.focused == focused) return;
     self.focused = focused;
 
@@ -3270,10 +3295,7 @@ pub fn focusCallback(self: *Surface, focused: bool) !void {
         .focus = focused,
     }, .{ .forever = {} });
 
-    if (focused) {
-        // Notify our app if we gained focus.
-        self.app.focusSurface(self);
-    } else unfocused: {
+    if (!focused) unfocused: {
         // If we lost focus and we have a keypress, then we want to send a key
         // release event for it. Depending on the apprt, this CAN result in
         // duplicate key release events, but that is better than not sending
@@ -4802,14 +4824,14 @@ fn mouseSelection(
         break :ebs drag_pin.before(click_pin);
     };
 
-    // Whether or not the the click pin cell
+    // Whether or not the click pin cell
     // should be included in the selection.
     const include_click_cell = if (end_before_start)
         click_x_frac >= threshold_point
     else
         click_x_frac < threshold_point;
 
-    // Whether or not the the drag pin cell
+    // Whether or not the drag pin cell
     // should be included in the selection.
     const include_drag_cell = if (end_before_start)
         drag_x_frac < threshold_point
@@ -6340,6 +6362,13 @@ fn testMouseSelectionIsNull(
             size,
         ),
     );
+}
+
+/// Get information about the process(es) running within the surface. Returns
+/// `null` if there was an error getting the information or the information is
+/// not available on a particular platform.
+pub fn getProcessInfo(self: *Surface, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
+    return self.io.getProcessInfo(info);
 }
 
 test "Surface: selection logic" {

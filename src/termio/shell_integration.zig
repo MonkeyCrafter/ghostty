@@ -701,6 +701,8 @@ fn setupXdgDataDirs(
 }
 
 test "xdg: empty XDG_DATA_DIRS" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     const testing = std.testing;
 
     var arena = ArenaAllocator.init(testing.allocator);
@@ -727,6 +729,8 @@ test "xdg: empty XDG_DATA_DIRS" {
 }
 
 test "xdg: existing XDG_DATA_DIRS" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     const testing = std.testing;
 
     var arena = ArenaAllocator.init(testing.allocator);
